@@ -6,7 +6,6 @@ import type {
   DashboardData,
   LightRecord,
   Project,
-  ScanRecord,
 } from "./types";
 
 type SectionKey = "summary" | "crm" | "field" | "ai" | "users";
@@ -1891,13 +1890,6 @@ function formatNumber(value: number): string {
   return Number.isFinite(value)
     ? new Intl.NumberFormat("zh-TW").format(value)
     : "—";
-}
-
-function formatDay(date: Date): string {
-  return date.toLocaleDateString("zh-TW", {
-    month: "2-digit",
-    day: "2-digit",
-  });
 }
 
 function formatDate(date: Date): string {
