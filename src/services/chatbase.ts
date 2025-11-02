@@ -202,9 +202,17 @@ function buildInteractions(
   conversations.forEach((conversation) => {
     const baseTime =
       conversation.updatedAt ?? conversation.createdAt ?? new Date();
-    conversation.messages.forEach((message) => {
-      if (message.role !== "user") return;
-      const language = detectLanguageFromText(message.content);
+    const messages = conversation.messages;
+    let hasUserQuestion = false;
+
+    for (let index = 0; index < messages.length; index += 1) {
+      const message = messages[index];
+      if (message.role !== "user") continue;
+      hasUserQuestion = true;
+      const assistantResponse = findNextAssistant(messages, index + 1);
+      const language = assistantResponse
+        ? detectLanguageFromText(assistantResponse.content)
+        : detectLanguageFromText(message.content);
       const category = classifyQuestion(message.content);
       items.push({
         conversationId: conversation.id,
@@ -213,9 +221,39 @@ function buildInteractions(
         language,
         category,
       });
-    });
+    }
+
+    if (!hasUserQuestion) {
+      const assistantResponse = findNextAssistant(messages, 0);
+      if (!assistantResponse) return;
+      const language = detectLanguageFromText(assistantResponse.content);
+      const fallbackQuestion =
+        messages.find((msg) => msg.role === "assistant" && msg.content)?.content ??
+        `Conversation ${conversation.id}`;
+      const category = classifyQuestion(fallbackQuestion);
+      items.push({
+        conversationId: conversation.id,
+        content: fallbackQuestion,
+        time: baseTime,
+        language,
+        category,
+      });
+    }
   });
   return items;
+}
+
+function findNextAssistant(
+  messages: ChatbaseMessage[],
+  startIndex: number
+): ChatbaseMessage | null {
+  for (let index = startIndex; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === "assistant" && message.content) {
+      return message;
+    }
+  }
+  return null;
 }
 
 function parseDateValue(value: unknown): Date | null {
