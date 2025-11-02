@@ -226,11 +226,38 @@ function SectionContent({
 }
 
 function SummarySection({ data }: { data: DashboardData }) {
+  const range = useMemo(() => createRollingRange(7), []);
+
+  const fieldSummary7d = useMemo(
+    () => computeFieldMetrics(data, range.start, range.end),
+    [data, range.start, range.end]
+  );
+
+  const zoneTrend = useMemo(
+    () =>
+      fieldSummary7d.metrics.map((item) => {
+        const zoneMeta = FIELD_ZONES.find((zone) => zone.id === item.id);
+        return {
+          id: item.id,
+          label: zoneMeta ? zoneMeta.label : item.id,
+          scans: item.scans,
+          clicks: item.clicks,
+        };
+      }),
+    [fieldSummary7d.metrics]
+  );
+
+  const aiStats = useMemo(() => {
+    if (data.clicks.length === 0) {
+      return { total: 0, zh: 0, en: 0 };
+    }
+    return computeAiStats(data, range.start, range.end);
+  }, [data, range.start, range.end]);
+
   const metrics = useMemo(() => {
     const totalScans = data.scans.length;
     const totalClicks = data.clicks.length;
     const arAssets = data.arObjects.length;
-    const activeProjects = data.projects.filter((project) => project.isActive);
     const uniqueVisitors = Object.keys(data.firstClickByUser).length;
 
     return [
@@ -250,6 +277,11 @@ function SummarySection({ data }: { data: DashboardData }) {
         note: "可用 AR Scene 數",
       },
       {
+        label: "AI 訪問數量",
+        value: formatNumber(aiStats.total),
+        note: `中文 ${formatNumber(aiStats.zh)} / 英文 ${formatNumber(aiStats.en)}`,
+      },
+      {
         label: "使用中文訪客",
         value: "待串接",
         note: "語系需串 CRM",
@@ -260,48 +292,12 @@ function SummarySection({ data }: { data: DashboardData }) {
         note: "語系需串 CRM",
       },
       {
-        label: "活躍專案",
-        value: formatNumber(activeProjects.length),
-        note: `共 ${formatNumber(data.projects.length)} 個專案`,
-      },
-      {
         label: "首訪會員",
         value: formatNumber(uniqueVisitors),
         note: "依第一筆互動統計",
       },
     ];
-  }, [data]);
-
-  const dailyTrend = useMemo(
-    () => buildDailyTrend(data.scans, data.clicks, 7),
-    [data.scans, data.clicks]
-  );
-
-  const zoneHotspots = useMemo(
-    () => buildZoneBreakdown(data).slice(0, 5),
-    [data]
-  );
-
-  const reminders = useMemo(
-    () => [
-      {
-        title: "邀請館方成員加入會員中心",
-        detail: "確認 SSO 權限、分組及資料備援。",
-        status: "進行中",
-      },
-      {
-        title: "建立『光雕夜探』AR Scene 導覽",
-        detail: "待設計稿確認，可先準備資產上傳規格。",
-        status: "準備中",
-      },
-      {
-        title: "更新光雕場域座標",
-        detail: "4 處燈具待確認定位，需安排現場校正。",
-        status: "待核對",
-      },
-    ],
-    []
-  );
+  }, [aiStats.en, aiStats.total, aiStats.zh, data]);
 
   return (
     <div className="section">
@@ -317,13 +313,12 @@ function SummarySection({ data }: { data: DashboardData }) {
 
       <div className="split-grid">
         <Panel
-          title="近期掃描趨勢"
-          subtitle="最後 7 天的掃描與點擊概況"
-          actions={<span className="panel__hint">待串接折線圖</span>}
+          title="六區掃描趨勢"
+          subtitle="最近 7 天掃描與點擊概況"
         >
           <ul className="timeline">
-            {dailyTrend.map((item) => (
-              <li key={item.label} className="timeline__item">
+            {zoneTrend.map((item) => (
+              <li key={item.id} className="timeline__item">
                 <span className="timeline__date">{item.label}</span>
                 <span className="timeline__value">
                   掃描 {formatNumber(item.scans)}
@@ -335,52 +330,7 @@ function SummarySection({ data }: { data: DashboardData }) {
             ))}
           </ul>
         </Panel>
-
-        <Panel title="進度與提醒" subtitle="絕大部分來自營運與導覽需求">
-          <ul className="checklist">
-            {reminders.map((item) => (
-              <li key={item.title} className="checklist__item">
-                <div>
-                  <span className="checklist__label">{item.title}</span>
-                  <span className="checklist__note">{item.detail}</span>
-                </div>
-                <span className="badge badge--info">{item.status}</span>
-              </li>
-            ))}
-          </ul>
-        </Panel>
       </div>
-
-      <Panel
-        title="重點場域熱度"
-        subtitle="依掃描量排序的場域概況"
-        actions={<span className="panel__hint">可延伸為地圖熱點</span>}
-      >
-        <div className="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">場域/區域</th>
-                <th scope="col">掃描數</th>
-                <th scope="col">燈具數</th>
-                <th scope="col">座標系</th>
-                <th scope="col">最近活動</th>
-              </tr>
-            </thead>
-            <tbody>
-              {zoneHotspots.map((zone) => (
-                <tr key={zone.zone}>
-                  <th scope="row">{zone.zone}</th>
-                  <td>{formatNumber(zone.scans)}</td>
-                  <td>{formatNumber(zone.lights)}</td>
-                  <td>{zone.coordinateSystems}</td>
-                  <td>{zone.lastActivity ? formatDateTime(zone.lastActivity) : "—"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
     </div>
   );
 }
