@@ -26,6 +26,11 @@ import type {
   ScanCoordinateRecord,
   ScanRecord,
 } from "../types";
+import {
+  isZooCoordinateSystemId,
+  isZooLigId,
+  isZooSceneId,
+} from "../constants/zoo";
 
 const DashboardDataContext = createContext<DashboardDataState>({
   status: "loading",
@@ -63,13 +68,13 @@ export function DashboardDataProvider({
       try {
         setState({ status: "loading" });
         const [
-          projects,
-          scans,
-          lights,
-          coordinateSystems,
-          clicks,
-          arObjects,
-          scanCoordinates,
+          projectList,
+          scanList,
+          lightList,
+          coordinateSystemList,
+          clickList,
+          arObjectList,
+          scanCoordinateList,
         ] = await Promise.all([
           loadProjects(),
           loadScans(),
@@ -81,6 +86,28 @@ export function DashboardDataProvider({
         ]);
 
         if (!isMounted) return;
+
+        const lights = lightList.filter((light) => isZooLigId(light.ligId));
+        const coordinateSystems = coordinateSystemList.filter((cs) =>
+          isZooCoordinateSystemId(cs.id)
+        );
+        const scans = scanList.filter((scan) => isZooLigId(scan.ligId));
+        const scanCoordinates = scanCoordinateList.filter((item) =>
+          isZooLigId(item.lightId)
+        );
+        const arObjects = arObjectList.filter((item) =>
+          isZooSceneId(item.sceneId)
+        );
+        const allowedObjectIds = new Set(arObjects.map((item) => item.id));
+        const clicks = clickList.filter((click) =>
+          allowedObjectIds.has(click.objId)
+        );
+        const projects = projectList
+          .filter((project) => project.lightIds.some((id) => isZooLigId(id)))
+          .map((project) => ({
+            ...project,
+            lightIds: project.lightIds.filter((id) => isZooLigId(id)),
+          }));
 
         const projectById: Record<number, Project> = {};
         const lightToProjectIds: Record<number, number[]> = {};
@@ -161,7 +188,7 @@ async function loadProjects(): Promise<Project[]> {
 }
 
 async function loadScans(): Promise<ScanRecord[]> {
-  return fetchCsv<ScanRecord>("/data/scans.csv", (row) => {
+  const transform = (row: Record<string, string>): ScanRecord | null => {
     const ligId = parseNumber(row["ligtag_id"]);
     if (ligId === null) return null;
     const time = parseDate(row["time"]);
@@ -172,7 +199,13 @@ async function loadScans(): Promise<ScanRecord[]> {
       clientId: row["client_id"]?.trim() ?? "",
       coordinateSystemId: parseNumber(row["coordinate_system_id"]),
     };
-  });
+  };
+
+  try {
+    return await fetchCsv<ScanRecord>("/data/scandata.csv", transform);
+  } catch {
+    return fetchCsv<ScanRecord>("/data/scans.csv", transform);
+  }
 }
 
 async function loadLights(): Promise<LightRecord[]> {
@@ -210,7 +243,7 @@ async function loadCoordinateSystems(): Promise<CoordinateSystemRecord[]> {
 }
 
 async function loadClicks(): Promise<ClickRecord[]> {
-  return fetchCsv<ClickRecord>("/data/clicks.csv", (row) => {
+  const transform = (row: Record<string, string>): ClickRecord | null => {
     const objId = parseNumber(row["obj_id"]);
     const time = parseDate(row["time"]);
     if (objId === null || !time) return null;
@@ -219,7 +252,13 @@ async function loadClicks(): Promise<ClickRecord[]> {
       time,
       codeName: row["code_name"]?.trim() ?? "",
     };
-  });
+  };
+
+  try {
+    return await fetchCsv<ClickRecord>("/data/obj_click_log.csv", transform);
+  } catch {
+    return fetchCsv<ClickRecord>("/data/clicks.csv", transform);
+  }
 }
 
 function buildFirstClickByUser(clicks: ClickRecord[]): Record<string, Date> {

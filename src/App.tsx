@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import "./App.css";
 import { useDashboardData } from "./context/DashboardDataContext";
-import type {
-  ClickRecord,
-  DashboardData,
-  LightRecord,
-  Project,
-} from "./types";
+import type { ClickRecord, DashboardData, Project } from "./types";
+import {
+  ZOO_ZONE_BY_COORDINATE_SYSTEM_ID,
+  ZOO_ZONE_BY_SCENE_ID,
+  ZOO_ZONE_CONFIGS,
+} from "./constants/zoo";
 
 type SectionKey = "summary" | "crm" | "field" | "ai" | "users";
 type CrmTabKey = "asset" | "projects" | "members";
@@ -90,14 +90,12 @@ interface FieldZoneLayout {
   left: string;
 }
 
-const FIELD_ZONES: FieldZoneLayout[] = [
-  { id: "Zone1", label: "Zone 1", top: "18%", left: "55%" },
-  { id: "Zone2", label: "Zone 2", top: "33%", left: "28%" },
-  { id: "Zone3", label: "Zone 3", top: "64%", left: "26%" },
-  { id: "Zone4", label: "Zone 4", top: "70%", left: "46%" },
-  { id: "Zone5", label: "Zone 5", top: "46%", left: "71%" },
-  { id: "Zone6", label: "Zone 6", top: "24%", left: "74%" },
-];
+const FIELD_ZONES: FieldZoneLayout[] = ZOO_ZONE_CONFIGS.map((zone) => ({
+  id: zone.id,
+  label: `${zone.label} (${zone.alias})`,
+  top: zone.position.top,
+  left: zone.position.left,
+}));
 
 function App() {
   const { status, data, error } = useDashboardData();
@@ -254,26 +252,35 @@ function SummarySection({ data }: { data: DashboardData }) {
   }, [data, range.start, range.end]);
 
   const metrics = useMemo(() => {
-    const totalScans = data.scans.length;
-    const totalClicks = data.clicks.length;
-    const arAssets = data.arObjects.length;
+    const landing = fieldSummary7d.landing;
     const uniqueVisitors = Object.keys(data.firstClickByUser).length;
+    const activeLights = new Set(data.lights.map((light) => light.ligId)).size;
 
     return [
       {
         label: "掃描總量",
-        value: formatNumber(totalScans),
-        note: "累積掃描事件",
+        value: formatNumber(fieldSummary7d.totalScans),
+        note: "最近 7 日掃描事件",
       },
       {
         label: "點擊物件總量",
-        value: formatNumber(totalClicks),
-        note: "互動點擊次數",
+        value: formatNumber(fieldSummary7d.totalClicks),
+        note: "最近 7 日 AR 互動",
       },
       {
-        label: "打開實境總量",
-        value: formatNumber(arAssets),
-        note: "可用 AR Scene 數",
+        label: "Landing Page 進入",
+        value: formatNumber(landing.total),
+        note: "依唯一裝置 (code_name) 計算",
+      },
+      {
+        label: "中文訪客",
+        value: formatNumber(landing.zh),
+        note: `佔比 ${formatShare(landing.zh, landing.total)}`,
+      },
+      {
+        label: "英文訪客",
+        value: formatNumber(landing.en),
+        note: `佔比 ${formatShare(landing.en, landing.total)}`,
       },
       {
         label: "AI 訪問數量",
@@ -281,14 +288,9 @@ function SummarySection({ data }: { data: DashboardData }) {
         note: `中文 ${formatNumber(aiStats.zh)} / 英文 ${formatNumber(aiStats.en)}`,
       },
       {
-        label: "使用中文訪客",
-        value: "待串接",
-        note: "語系需串 CRM",
-      },
-      {
-        label: "使用英文訪客",
-        value: "待串接",
-        note: "語系需串 CRM",
+        label: "上線 Ligtag",
+        value: formatNumber(activeLights),
+        note: "園區有效燈具",
       },
       {
         label: "首訪會員",
@@ -296,7 +298,7 @@ function SummarySection({ data }: { data: DashboardData }) {
         note: "依第一筆互動統計",
       },
     ];
-  }, [aiStats.en, aiStats.total, aiStats.zh, data]);
+  }, [aiStats, data.firstClickByUser, data.lights, fieldSummary7d]);
 
   return (
     <div className="section">
@@ -914,7 +916,7 @@ function FieldManagementContent({ data }: { data: DashboardData }) {
       </div>
 
       <p className="field-footnote">
-        * 掃描數據來自燈具事件；物件點擊為示意值，實際互動成效需與 AR 事件資料串接。
+        * 數據來源：scandata.csv（掃描）與 obj_click_log.csv（物件互動）。
       </p>
     </div>
   );
@@ -1487,46 +1489,57 @@ function computeFieldMetrics(
     [start, end] = [end, start];
   }
 
-  const zoneTotal = new Map<string, { scans: number; clicks: number }>();
-  FIELD_ZONES.forEach((zone) => zoneTotal.set(zone.id, { scans: 0, clicks: 0 }));
+  const statsByZone = new Map<string, { scans: number; clicks: number }>();
+  ZOO_ZONE_CONFIGS.forEach((zone) => {
+    statsByZone.set(zone.id, { scans: 0, clicks: 0 });
+  });
 
-  const zoneByLight = new Map<number, string>();
-  data.lights.forEach((light, index) => {
-    zoneByLight.set(light.ligId, resolveZoneId(light, index));
+  const zoneByLigId = new Map<number, string>();
+  ZOO_ZONE_CONFIGS.forEach((zone) => zoneByLigId.set(zone.ligId, zone.id));
+
+  const zoneByObjectId = new Map<number, string>();
+  data.arObjects.forEach((object) => {
+    if (object.sceneId === null || object.sceneId === undefined) return;
+    const zone = ZOO_ZONE_BY_SCENE_ID.get(object.sceneId);
+    if (zone) {
+      zoneByObjectId.set(object.id, zone.id);
+    }
   });
 
   const startMs = start.getTime();
-  const endMs = end.getTime();
+  const endMs = end.getTime() + MS_PER_DAY - 1;
 
   data.scans.forEach((scan) => {
     const time = scan.time.getTime();
     if (time < startMs || time > endMs) return;
     const zoneId =
-      zoneByLight.get(scan.ligId) ??
-      FIELD_ZONES[(scan.ligId - 1) % FIELD_ZONES.length]?.id ??
-      FIELD_ZONES[0].id;
-    if (!zoneTotal.has(zoneId)) {
-      zoneTotal.set(zoneId, { scans: 0, clicks: 0 });
-    }
-    zoneTotal.get(zoneId)!.scans += 1;
+      zoneByLigId.get(scan.ligId) ??
+      (scan.coordinateSystemId !== null && scan.coordinateSystemId !== undefined
+        ? ZOO_ZONE_BY_COORDINATE_SYSTEM_ID.get(scan.coordinateSystemId)?.id
+        : undefined);
+    if (!zoneId) return;
+    const entry = statsByZone.get(zoneId);
+    if (!entry) return;
+    entry.scans += 1;
   });
 
-  FIELD_ZONES.forEach((zone, index) => {
-    if (!zoneTotal.has(zone.id)) {
-      zoneTotal.set(zone.id, { scans: 0, clicks: 0 });
-    }
-    const entry = zoneTotal.get(zone.id)!;
-    const ratio = 0.35 + ((index % 3) * 0.1);
-    entry.clicks = Math.round(entry.scans * ratio);
+  data.clicks.forEach((click) => {
+    const time = click.time.getTime();
+    if (time < startMs || time > endMs) return;
+    const zoneId = zoneByObjectId.get(click.objId);
+    if (!zoneId) return;
+    const entry = statsByZone.get(zoneId);
+    if (!entry) return;
+    entry.clicks += 1;
   });
 
-  const metricsDraft = FIELD_ZONES.map((zone) => {
-    const entry = zoneTotal.get(zone.id) ?? { scans: 0, clicks: 0 };
+  const metricsDraft = ZOO_ZONE_CONFIGS.map((zone) => {
+    const stats = statsByZone.get(zone.id) ?? { scans: 0, clicks: 0 };
     return {
       id: zone.id,
-      label: zone.label,
-      scans: entry.scans,
-      clicks: entry.clicks,
+      label: `${zone.label} (${zone.alias})`,
+      scans: stats.scans,
+      clicks: stats.clicks,
     };
   });
 
@@ -1592,28 +1605,20 @@ function computeLandingSummary(
   end: Date
 ): LandingSummary {
   const startMs = start.getTime();
-  const endMs = end.getTime();
+  const endMs = end.getTime() + MS_PER_DAY - 1;
+  const seen = new Set<string>();
   let zh = 0;
   let en = 0;
 
-  data.scans.forEach((scan) => {
-    const time = scan.time.getTime();
+  data.clicks.forEach((click) => {
+    const time = click.time.getTime();
     if (time < startMs || time > endMs) return;
-    const preferred = (scan as unknown as { lang?: string }).lang ?? inferLanguageFromClient(scan.clientId);
-    if (preferred === "zh" || preferred === "zh-TW" || preferred === "zh-CN") {
-      zh += 1;
-    } else {
-      en += 1;
-    }
+    const identifier = click.codeName.trim();
+    if (!identifier || seen.has(identifier)) return;
+    seen.add(identifier);
+    const language = detectLanguage(identifier);
+    language === "zh" ? zh++ : en++;
   });
-
-  if (zh + en === 0) {
-    return {
-      total: 0,
-      zh: 0,
-      en: 0,
-    };
-  }
 
   return {
     total: zh + en,
@@ -1639,6 +1644,7 @@ function computeAiStats(
   const trendMap = new Map<string, { date: Date; total: number; zh: number; en: number }>();
   const categoryMap = new Map<string, number>();
   const questions: AiQuestion[] = [];
+  const objectById = new Map(data.arObjects.map((object) => [object.id, object]));
 
   let zh = 0;
   let en = 0;
@@ -1659,7 +1665,8 @@ function computeAiStats(
     if (language === "zh") trend.zh += 1;
     else trend.en += 1;
 
-    const question = buildAiQuestion(click, language, index);
+    const object = objectById.get(click.objId);
+    const question = buildAiQuestion(click, language, index, object?.name);
     questions.push(question);
 
     const category = question.category;
@@ -1722,21 +1729,8 @@ function buildUserLogs(data: DashboardData): LogItem[] {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function resolveZoneId(light: LightRecord, index: number): string {
-  if (light.fieldId !== null && light.fieldId >= 1 && light.fieldId <= FIELD_ZONES.length) {
-    return `Zone${light.fieldId}`;
-  }
-  if (light.coordinateSystemName) {
-    const match = light.coordinateSystemName.match(/zone\s*(\d+)/i);
-    if (match) {
-      const zoneNumber = Number(match[1]);
-      if (!Number.isNaN(zoneNumber)) {
-        return `Zone${zoneNumber}`;
-      }
-    }
-  }
-  return FIELD_ZONES[index % FIELD_ZONES.length]?.id ?? FIELD_ZONES[0].id;
-}
+const APP_CODE_ZH = new Set(["57"]);
+const APP_CODE_EN = new Set(["00", "03", "04", "99"]);
 
 function buildFieldRecommendation(
   share: number,
@@ -1761,26 +1755,28 @@ function createRollingRange(days: number): DateRangeSelection {
   return { start, end };
 }
 
-function inferLanguageFromClient(clientId: string): "zh" | "en" {
-  if (!clientId) return "zh";
-  const lowered = clientId.toLowerCase();
-  if (lowered.includes("tw") || lowered.includes("zh") || lowered.includes("cn")) {
-    return "zh";
+function detectLanguage(identifier: string): "zh" | "en" {
+  if (!identifier) return "zh";
+  const trimmed = identifier.trim();
+  const match = trimmed.match(/^(\d{2})/);
+  if (match) {
+    const prefix = match[1];
+    if (APP_CODE_ZH.has(prefix)) return "zh";
+    if (APP_CODE_EN.has(prefix)) return "en";
   }
-  return "en";
-}
-
-function detectLanguage(text: string): "zh" | "en" {
-  if (!text) return "zh";
-  return /[\u3400-\u9FFF]/.test(text) ? "zh" : "en";
+  if (/[\u3400-\u9FFF]/.test(trimmed)) return "zh";
+  if (/english|en/i.test(trimmed)) return "en";
+  return "zh";
 }
 
 function buildAiQuestion(
   click: ClickRecord,
   language: "zh" | "en",
-  index: number
+  index: number,
+  objectName?: string | null
 ): AiQuestion {
-  const questionText = click.codeName?.trim() || `AI 問題 #${click.objId}`;
+  const baseText = objectName?.trim() || click.codeName?.trim();
+  const questionText = baseText && baseText.length > 0 ? baseText : `AI 問題 #${click.objId}`;
   const category = classifyAiQuestion(questionText);
   return {
     id: `ai-${index}-${click.objId}`,
