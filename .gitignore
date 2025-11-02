@@ -8,17 +8,13 @@ pnpm-debug.log*
 lerna-debug.log*
 
 # Build / deps
-frontend/node_modules/
-frontend/dist/
 node_modules/
 dist/
 dist-ssr/
 *.local
-frontend/.env.local
 
-# Python artifacts
-__pycache__/
-*.pyc
+# Environment
+.env.local
 
 # Editor/system
 .vscode/*
@@ -30,3 +26,10 @@ __pycache__/
 *.njsproj
 *.sln
 *.sw?
+
+# Python artifacts
+__pycache__/
+*.pyc
+
+# Vercel
+.vercel
