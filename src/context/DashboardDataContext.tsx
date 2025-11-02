@@ -4,6 +4,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
   type ReactNode,
 } from "react";
 import {
@@ -25,12 +26,18 @@ import type {
   Project,
   ScanCoordinateRecord,
   ScanRecord,
+  ChatbaseStats,
+  ChatbaseData,
 } from "../types";
 import {
   isZooCoordinateSystemId,
   isZooLigId,
   isZooSceneId,
 } from "../constants/zoo";
+import {
+  fetchChatbaseConversations,
+  summarizeChatbaseConversations,
+} from "../services/chatbase";
 
 const DashboardDataContext = createContext<DashboardDataState>({
   status: "loading",
@@ -50,6 +57,7 @@ export function DashboardDataProvider({
     if (typeof window === "undefined") return "";
     return window.localStorage.getItem("lig_token") ?? "";
   });
+  const chatbaseCacheRef = useRef<Map<string, ChatbaseStats>>(new Map());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -124,6 +132,58 @@ export function DashboardDataProvider({
 
         const firstClickByUser = buildFirstClickByUser(clicks);
 
+        const chatbaseConfig = getChatbaseConfig();
+        let chatbase: ChatbaseData | undefined;
+
+        if (chatbaseConfig) {
+          try {
+            const stats7d = await ensureChatbaseStats(
+              buildChatbaseRange(7),
+              chatbaseCacheRef.current,
+              chatbaseConfig
+            );
+            const stats30d = await ensureChatbaseStats(
+              buildChatbaseRange(30),
+              chatbaseCacheRef.current,
+              chatbaseConfig
+            );
+
+            chatbase = {
+              available: true,
+              stats: {
+                "7d": stats7d,
+                "30d": stats30d,
+              },
+              getStats: async ({ start, end, key }) =>
+                ensureChatbaseStats(
+                  normalizeChatbaseRange(start, end, key),
+                  chatbaseCacheRef.current,
+                  chatbaseConfig
+                ),
+            };
+          } catch (chatbaseError) {
+            console.warn(
+              "[DashboardData] Chatbase 數據載入失敗：",
+              chatbaseError
+            );
+            const message =
+              chatbaseError instanceof Error
+                ? chatbaseError.message
+                : "Chatbase 取數失敗";
+            chatbase = {
+              available: false,
+              error: message,
+              stats: {},
+            };
+          }
+        } else {
+          chatbase = {
+            available: false,
+            error: "Chatbase API 尚未設定",
+            stats: {},
+          };
+        }
+
         const data: DashboardData = {
           projects,
           scans,
@@ -135,6 +195,7 @@ export function DashboardDataProvider({
           projectById,
           lightToProjectIds,
           firstClickByUser,
+          chatbase,
         };
 
         setState({ status: "ready", data });
@@ -328,6 +389,78 @@ async function loadScanCoordinates(): Promise<ScanCoordinateRecord[]> {
       createdAt: parseDate(row["Created at"]),
     };
   });
+}
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+interface ChatbaseCredentialConfig {
+  apiKey: string;
+  chatbotId: string;
+  apiBase?: string;
+}
+
+function getChatbaseConfig(): ChatbaseCredentialConfig | null {
+  const apiKey = import.meta.env.VITE_CHATBASE_API_KEY as string | undefined;
+  const chatbotId = import.meta.env.VITE_CHATBASE_CHATBOT_ID as string | undefined;
+  const apiBase = import.meta.env.VITE_CHATBASE_API_BASE as string | undefined;
+  if (!apiKey || !chatbotId) return null;
+  return { apiKey, chatbotId, apiBase };
+}
+
+function buildChatbaseRange(days: number) {
+  const end = truncateToDay(new Date());
+  const start = truncateToDay(
+    new Date(end.getTime() - (Math.max(1, days) - 1) * MS_PER_DAY)
+  );
+  return { start, end, key: `${days}d` };
+}
+
+function normalizeChatbaseRange(
+  start: Date,
+  end: Date,
+  key?: string
+): { start: Date; end: Date; key: string } {
+  const normalizedStart = truncateToDay(start);
+  const normalizedEnd = truncateToDay(end);
+  if (normalizedStart.getTime() > normalizedEnd.getTime()) {
+    return normalizeChatbaseRange(normalizedEnd, normalizedStart, key);
+  }
+  return {
+    start: normalizedStart,
+    end: normalizedEnd,
+    key: key ?? `custom_${buildRangeKey(normalizedStart, normalizedEnd)}`,
+  };
+}
+
+async function ensureChatbaseStats(
+  range: { start: Date; end: Date; key: string },
+  cache: Map<string, ChatbaseStats>,
+  config: ChatbaseCredentialConfig
+): Promise<ChatbaseStats> {
+  const cacheKey = buildRangeKey(range.start, range.end);
+  const cached = cache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+  const conversations = await fetchChatbaseConversations(range, config);
+  const stats = summarizeChatbaseConversations(conversations, range);
+  cache.set(cacheKey, stats);
+  return stats;
+}
+
+function buildRangeKey(start: Date, end: Date): string {
+  return `${formatDateCompact(start)}_${formatDateCompact(end)}`;
+}
+
+function formatDateCompact(date: Date): string {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}${month}${day}`;
+}
+
+function truncateToDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
 
 function parseLocation(value: string | undefined): {

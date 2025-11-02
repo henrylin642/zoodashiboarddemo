@@ -1,12 +1,21 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import "./App.css";
 import { useDashboardData } from "./context/DashboardDataContext";
-import type { ClickRecord, DashboardData, Project } from "./types";
+import type {
+  ChatbaseStats,
+  ClickRecord,
+  DashboardData,
+  Project,
+} from "./types";
 import {
   ZOO_ZONE_BY_COORDINATE_SYSTEM_ID,
   ZOO_ZONE_BY_SCENE_ID,
   ZOO_ZONE_CONFIGS,
 } from "./constants/zoo";
+import {
+  classifyQuestion,
+  detectLanguageFromIdentifier,
+} from "./utils/ai";
 
 type SectionKey = "summary" | "crm" | "field" | "ai" | "users";
 type CrmTabKey = "asset" | "projects" | "members";
@@ -244,19 +253,24 @@ function SummarySection({ data }: { data: DashboardData }) {
     [fieldSummary7d.metrics]
   );
 
+  const chatbaseStats7d = data.chatbase?.stats?.["7d"] ?? null;
+
   const aiStats = useMemo(() => {
+    if (chatbaseStats7d) {
+      return convertChatbaseStats(chatbaseStats7d);
+    }
     if (data.clicks.length === 0) {
-      return { total: 0, zh: 0, en: 0 };
+      return createEmptyAiStats();
     }
     return computeAiStats(data, range.start, range.end);
-  }, [data, range.start, range.end]);
+  }, [chatbaseStats7d, data, range.start, range.end]);
 
   const metrics = useMemo(() => {
     const landing = fieldSummary7d.landing;
     const uniqueVisitors = Object.keys(data.firstClickByUser).length;
     const activeLights = new Set(data.lights.map((light) => light.ligId)).size;
 
-    return [
+    const items = [
       {
         label: "掃描總量",
         value: formatNumber(fieldSummary7d.totalScans),
@@ -283,11 +297,6 @@ function SummarySection({ data }: { data: DashboardData }) {
         note: `佔比 ${formatShare(landing.en, landing.total)}`,
       },
       {
-        label: "AI 訪問數量",
-        value: formatNumber(aiStats.total),
-        note: `中文 ${formatNumber(aiStats.zh)} / 英文 ${formatNumber(aiStats.en)}`,
-      },
-      {
         label: "上線 Ligtag",
         value: formatNumber(activeLights),
         note: "園區有效燈具",
@@ -297,8 +306,24 @@ function SummarySection({ data }: { data: DashboardData }) {
         value: formatNumber(uniqueVisitors),
         note: "依第一筆互動統計",
       },
-    ];
-  }, [aiStats, data.firstClickByUser, data.lights, fieldSummary7d]);
+    ] as Array<{ label: string; value: string; note: string }>;
+
+    if (chatbaseStats7d) {
+      items.splice(5, 0, {
+        label: "AI 會話總數",
+        value: formatNumber(chatbaseStats7d.totalConversations),
+        note: "近 7 日對話",
+      });
+    }
+
+    items.splice(6, 0, {
+      label: chatbaseStats7d ? "AI 問題總數" : "AI 訪問數量",
+      value: formatNumber(aiStats.total),
+      note: `中文 ${formatNumber(aiStats.zh)} / 英文 ${formatNumber(aiStats.en)}`,
+    });
+
+    return items;
+  }, [aiStats, chatbaseStats7d, data.firstClickByUser, data.lights, fieldSummary7d]);
 
   return (
     <div className="section">
@@ -1127,10 +1152,90 @@ function AiDataSection({ data }: { data: DashboardData }) {
     return normalizeRange(customRange);
   }, [preset, customRange]);
 
-  const aiStats = useMemo(
-    () => computeAiStats(data, effectiveRange.start, effectiveRange.end),
-    [data, effectiveRange.start, effectiveRange.end]
+  const initialChatbaseStats =
+    preset === "7d"
+      ? data.chatbase?.stats?.["7d"] ?? null
+      : preset === "30d"
+        ? data.chatbase?.stats?.["30d"] ?? null
+        : null;
+
+  const [chatbaseRangeStats, setChatbaseRangeStats] = useState<ChatbaseStats | null>(
+    initialChatbaseStats
   );
+  const [aiStats, setAiStats] = useState<AiStats>(() =>
+    initialChatbaseStats
+      ? convertChatbaseStats(initialChatbaseStats)
+      : createEmptyAiStats()
+  );
+  const [aiLoading, setAiLoading] = useState<boolean>(
+    Boolean(data.chatbase?.available) && !initialChatbaseStats
+  );
+  const [aiError, setAiError] = useState<string | null>(
+    data.chatbase?.available ? null : data.chatbase?.error ?? null
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    async function loadAiStats() {
+      const chatbaseAvailable =
+        Boolean(data.chatbase?.available) && typeof data.chatbase?.getStats === "function";
+
+      if (chatbaseAvailable && data.chatbase?.getStats) {
+        const preloaded =
+          preset === "7d"
+            ? data.chatbase.stats["7d"]
+            : preset === "30d"
+              ? data.chatbase.stats["30d"]
+              : null;
+
+        if (preloaded) {
+          if (cancelled) return;
+          setChatbaseRangeStats(preloaded);
+          setAiStats(convertChatbaseStats(preloaded));
+          setAiLoading(false);
+          setAiError(null);
+          return;
+        }
+
+        setAiLoading(true);
+        setAiError(null);
+        try {
+          const stats = await data.chatbase.getStats({
+            start: effectiveRange.start,
+            end: effectiveRange.end,
+            key: preset,
+          });
+          if (cancelled) return;
+          setChatbaseRangeStats(stats);
+          setAiStats(convertChatbaseStats(stats));
+          setAiLoading(false);
+        } catch (error) {
+          if (cancelled) return;
+          console.warn("[AI Data] Chatbase 資料載入失敗", error);
+          const message =
+            error instanceof Error ? error.message : "Chatbase 取數失敗";
+          setAiError(message);
+          const fallback = computeAiStats(data, effectiveRange.start, effectiveRange.end);
+          setChatbaseRangeStats(null);
+          setAiStats(fallback);
+          setAiLoading(false);
+        }
+        return;
+      }
+
+      const fallback = computeAiStats(data, effectiveRange.start, effectiveRange.end);
+      if (cancelled) return;
+      setChatbaseRangeStats(null);
+      setAiStats(fallback);
+      setAiLoading(false);
+      setAiError(data.chatbase?.error ?? "Chatbase 未啟用，顯示模擬數據");
+    }
+
+    loadAiStats();
+    return () => {
+      cancelled = true;
+    };
+  }, [data, effectiveRange.end, effectiveRange.start, preset]);
 
   const rangeLabel = `${formatDate(effectiveRange.start)} - ${formatDate(effectiveRange.end)}`;
 
@@ -1201,11 +1306,35 @@ function AiDataSection({ data }: { data: DashboardData }) {
             </div>
           </div>
 
+          {aiLoading ? (
+            <div className="ai-panel__alert">
+              <span className="status-tag status-tag--loading">AI 數據載入中…</span>
+            </div>
+          ) : null}
+          {aiError ? (
+            <div className="ai-panel__alert">
+              <span className="status-tag status-tag--error">{aiError}</span>
+            </div>
+          ) : null}
+
           <div className="ai-summary field-users__cards">
+            {chatbaseRangeStats ? (
+              <div className="card card--metric">
+                <span className="card__label">AI 會話總數</span>
+                <span className="card__value">
+                  {formatNumber(chatbaseRangeStats.totalConversations)}
+                </span>
+                <span className="card__note">期間 {rangeLabel}</span>
+              </div>
+            ) : null}
             <div className="card card--metric">
-              <span className="card__label">AI 調用總數</span>
+              <span className="card__label">
+                {chatbaseRangeStats ? "提問總數" : "AI 調用總數"}
+              </span>
               <span className="card__value">{formatNumber(aiStats.total)}</span>
-              <span className="card__note">掃描後觸發 AI 導覽</span>
+              <span className="card__note">
+                {chatbaseRangeStats ? "依 Chatbase 對話訊息統計" : "掃描後觸發 AI 導覽"}
+              </span>
             </div>
             <div className="card card--metric">
               <span className="card__label">中文環境</span>
@@ -1616,7 +1745,7 @@ function computeLandingSummary(
     const identifier = click.codeName.trim();
     if (!identifier || seen.has(identifier)) return;
     seen.add(identifier);
-    const language = detectLanguage(identifier);
+    const language = detectLanguageFromIdentifier(identifier);
     language === "zh" ? zh++ : en++;
   });
 
@@ -1652,7 +1781,7 @@ function computeAiStats(
   data.clicks.forEach((click, index) => {
     const time = click.time.getTime();
     if (time < startMs || time > endMs) return;
-    const language = detectLanguage(click.codeName);
+    const language = detectLanguageFromIdentifier(click.codeName);
     language === "zh" ? (zh += 1) : (en += 1);
 
     const day = truncateToDay(click.time);
@@ -1697,6 +1826,39 @@ function computeAiStats(
   };
 }
 
+function convertChatbaseStats(stats: ChatbaseStats): AiStats {
+  return {
+    total: stats.totalInteractions,
+    zh: stats.zh,
+    en: stats.en,
+    trend: stats.trend.map((item) => ({
+      label: item.label,
+      total: item.total,
+      zh: item.zh,
+      en: item.en,
+    })),
+    categories: stats.categories,
+    questions: stats.questions.map((interaction, index) => ({
+      id: `chatbase-${interaction.conversationId}-${index}`,
+      question: interaction.content,
+      category: interaction.category,
+      language: interaction.language,
+      time: interaction.time,
+    })),
+  };
+}
+
+function createEmptyAiStats(): AiStats {
+  return {
+    total: 0,
+    zh: 0,
+    en: 0,
+    trend: [],
+    categories: [],
+    questions: [],
+  };
+}
+
 function buildUserLogs(data: DashboardData): LogItem[] {
   const entries: LogItem[] = [];
 
@@ -1729,9 +1891,6 @@ function buildUserLogs(data: DashboardData): LogItem[] {
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const APP_CODE_ZH = new Set(["57"]);
-const APP_CODE_EN = new Set(["00", "03", "04", "99"]);
-
 function buildFieldRecommendation(
   share: number,
   engagement: number,
@@ -1755,20 +1914,6 @@ function createRollingRange(days: number): DateRangeSelection {
   return { start, end };
 }
 
-function detectLanguage(identifier: string): "zh" | "en" {
-  if (!identifier) return "zh";
-  const trimmed = identifier.trim();
-  const match = trimmed.match(/^(\d{2})/);
-  if (match) {
-    const prefix = match[1];
-    if (APP_CODE_ZH.has(prefix)) return "zh";
-    if (APP_CODE_EN.has(prefix)) return "en";
-  }
-  if (/[\u3400-\u9FFF]/.test(trimmed)) return "zh";
-  if (/english|en/i.test(trimmed)) return "en";
-  return "zh";
-}
-
 function buildAiQuestion(
   click: ClickRecord,
   language: "zh" | "en",
@@ -1777,7 +1922,7 @@ function buildAiQuestion(
 ): AiQuestion {
   const baseText = objectName?.trim() || click.codeName?.trim();
   const questionText = baseText && baseText.length > 0 ? baseText : `AI 問題 #${click.objId}`;
-  const category = classifyAiQuestion(questionText);
+  const category = classifyQuestion(questionText);
   return {
     id: `ai-${index}-${click.objId}`,
     question: questionText,
@@ -1785,26 +1930,6 @@ function buildAiQuestion(
     language,
     time: click.time,
   };
-}
-
-function classifyAiQuestion(question: string): string {
-  const text = question.toLowerCase();
-  if (/[\u3400-\u9FFF]/.test(question) && text.includes("餵")) {
-    return "飼養照護";
-  }
-  if (text.includes("feeding") || text.includes("food")) {
-    return "飼養照護";
-  }
-  if (text.includes("ticket") || text.includes("開館") || text.includes("時間")) {
-    return "票務 / 開放時間";
-  }
-  if (text.includes("交通") || text.includes("parking") || text.includes("路線")) {
-    return "交通動線";
-  }
-  if (text.includes("souvenir") || text.includes("shop") || text.includes("紀念")) {
-    return "商店與活動";
-  }
-  return "一般諮詢";
 }
 
 function normalizeRange(range: DateRangeSelection): DateRangeSelection {

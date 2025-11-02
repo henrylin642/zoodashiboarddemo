@@ -61,6 +61,51 @@ export interface ScanCoordinateRecord {
   createdAt: Date | null;
 }
 
+export interface ChatbaseMessage {
+  id?: string;
+  role: "user" | "assistant";
+  content: string;
+  type?: string;
+}
+
+export interface ChatbaseConversation {
+  id: string;
+  chatbotId: string;
+  createdAt: Date | null;
+  updatedAt: Date | null;
+  source?: string | null;
+  messages: ChatbaseMessage[];
+}
+
+export interface ChatInteraction {
+  conversationId: string;
+  content: string;
+  time: Date;
+  language: "zh" | "en";
+  category: string;
+}
+
+export interface ChatbaseStats {
+  rangeKey: string;
+  start: Date;
+  end: Date;
+  fetchedAt: Date;
+  totalConversations: number;
+  totalInteractions: number;
+  zh: number;
+  en: number;
+  trend: Array<{ label: string; total: number; zh: number; en: number }>;
+  categories: Array<{ category: string; count: number }>;
+  questions: ChatInteraction[];
+}
+
+export interface ChatbaseData {
+  available: boolean;
+  error?: string;
+  stats: Record<string, ChatbaseStats>;
+  getStats?: (range: { start: Date; end: Date; key?: string }) => Promise<ChatbaseStats>;
+}
+
 export interface DashboardData {
   projects: Project[];
   scans: ScanRecord[];
@@ -72,6 +117,7 @@ export interface DashboardData {
   lightToProjectIds: Record<number, number[]>;
   projectById: Record<number, Project>;
   firstClickByUser: Record<string, Date>;
+  chatbase?: ChatbaseData;
 }
 
 export interface DashboardDataState {
