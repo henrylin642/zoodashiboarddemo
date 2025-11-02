@@ -1435,16 +1435,6 @@ function Panel({
   );
 }
 
-interface ZoneBreakdownRow {
-  zone: string;
-  scans: number;
-  lights: number;
-  activeLights: number;
-  coordinateSystems: string;
-  lastActivity: Date | null;
-  share: string;
-}
-
 interface LogItem {
   id: string;
   time: Date;
@@ -1452,12 +1442,6 @@ interface LogItem {
   typeLabel: string;
   title: string;
   note: string;
-}
-
-interface DailyTrendItem {
-  label: string;
-  scans: number;
-  clicks: number;
 }
 
 interface GalleryAsset {
@@ -1491,116 +1475,6 @@ function computeLastUpdated(data?: DashboardData): Date | null {
   }
 
   return Number.isFinite(latest) ? new Date(latest) : null;
-}
-
-function buildDailyTrend(
-  scans: ScanRecord[],
-  clicks: ClickRecord[],
-  windowSize: number
-): DailyTrendItem[] {
-  const map = new Map<string, { day: Date; scans: number; clicks: number }>();
-
-  for (const record of scans) {
-    const day = truncateToDay(record.time);
-    const key = day.toISOString();
-    if (!map.has(key)) {
-      map.set(key, { day, scans: 0, clicks: 0 });
-    }
-    map.get(key)!.scans += 1;
-  }
-
-  for (const click of clicks) {
-    const day = truncateToDay(click.time);
-    const key = day.toISOString();
-    if (!map.has(key)) {
-      map.set(key, { day, scans: 0, clicks: 0 });
-    }
-    map.get(key)!.clicks += 1;
-  }
-
-  const sorted = Array.from(map.values()).sort(
-    (a, b) => a.day.getTime() - b.day.getTime()
-  );
-
-  return sorted.slice(-windowSize).map((item) => ({
-    label: formatDay(item.day),
-    scans: item.scans,
-    clicks: item.clicks,
-  }));
-}
-
-function buildZoneBreakdown(data: DashboardData): ZoneBreakdownRow[] {
-  const lightLookup = new Map<number, LightRecord>();
-  data.lights.forEach((light) => lightLookup.set(light.ligId, light));
-
-  const zoneMap = new Map<
-    string,
-    {
-      scans: number;
-      lights: Set<number>;
-      activeLights: Set<number>;
-      coordinateSystems: Set<string>;
-      lastActivity: Date | null;
-    }
-  >();
-
-  const formatZone = (light: LightRecord) => {
-    if (light.coordinateSystemName) return light.coordinateSystemName;
-    if (light.fieldId !== null) return `Zone ${light.fieldId}`;
-    return `燈具 ${light.ligId}`;
-  };
-
-  for (const light of data.lights) {
-    const zoneName = formatZone(light);
-    if (!zoneMap.has(zoneName)) {
-      zoneMap.set(zoneName, {
-        scans: 0,
-        lights: new Set(),
-        activeLights: new Set(),
-        coordinateSystems: new Set(),
-        lastActivity: null,
-      });
-    }
-    const zone = zoneMap.get(zoneName)!;
-    zone.lights.add(light.ligId);
-    if (light.coordinateSystemName) {
-      zone.coordinateSystems.add(light.coordinateSystemName);
-    }
-  }
-
-  for (const scan of data.scans) {
-    const light = lightLookup.get(scan.ligId);
-    if (!light) continue;
-    const zoneName = formatZone(light);
-    const zone = zoneMap.get(zoneName);
-    if (!zone) continue;
-    zone.scans += 1;
-    zone.activeLights.add(scan.ligId);
-    if (!zone.lastActivity || scan.time > zone.lastActivity) {
-      zone.lastActivity = scan.time;
-    }
-  }
-
-  const totalScans = Array.from(zoneMap.values()).reduce(
-    (acc, zone) => acc + zone.scans,
-    0
-  );
-
-  return Array.from(zoneMap.entries())
-    .map(([zone, info]) => ({
-      zone,
-      scans: info.scans,
-      lights: info.lights.size,
-      activeLights: info.activeLights.size,
-      coordinateSystems: info.coordinateSystems.size
-        ? Array.from(info.coordinateSystems).join("、")
-        : "—",
-      lastActivity: info.lastActivity,
-      share: totalScans
-        ? `${((info.scans / totalScans) * 100).toFixed(1)}%`
-        : "—",
-    }))
-    .sort((a, b) => b.scans - a.scans);
 }
 
 function computeFieldMetrics(
